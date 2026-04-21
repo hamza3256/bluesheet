@@ -43,20 +43,36 @@ curl -s -X POST http://localhost:8080/v1/report-requests \
 curl -s http://localhost:8080/v1/report-requests/<id> | jq .
 ```
 
-## Environment variables
+### Idempotency
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `postgres://bluesheet:bluesheet@localhost:5432/bluesheet?sslmode=disable` | PostgreSQL connection string |
-| `S3_ENDPOINT` | `http://localhost:4566` | S3-compatible endpoint (LocalStack) |
-| `S3_BUCKET` | `bluesheets` | Target bucket for report uploads |
-| `S3_REGION` | `us-east-1` | AWS region |
-| `AWS_ACCESS_KEY_ID` | `test` | AWS access key |
-| `AWS_SECRET_ACCESS_KEY` | `test` | AWS secret key |
-| `HTTP_ADDR` | `:8080` | API listen address |
-| `WORKER_POLL_INTERVAL` | `2s` | How often the worker polls for new jobs |
-| `WORKER_CONCURRENCY` | `2` | Number of concurrent worker goroutines |
-| `PRESIGN_GET_URL_DURATION` | `1h` | Lifetime of presigned `download_url` links returned by GET |
+Requests are deduplicated by **(ticker, start_time, end_time)**. Submitting the same parameters multiple times returns the existing request (with its current status) rather than creating a duplicate.
+
+### Webhook notification (callback_url)
+
+Instead of polling, we can provide a `callback_url` when creating a request. The worker will **POST** to that URL when the job reaches a terminal state (`succeeded` or `failed`).
+
+```bash
+curl -s -X POST http://localhost:8080/v1/report-requests \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "ticker":"GOOG",
+    "start_time":"2026-01-01T00:00:00Z",
+    "end_time":"2026-02-01T00:00:00Z",
+    "callback_url":"https://a-service.example/webhook"
+  }' | jq .
+```
+
+The callback payload looks like:
+
+```json
+{"request_id":"<uuid>","ticker":"GOOG","status":"succeeded"}
+```
+
+Or on failure:
+
+```json
+{"request_id":"<uuid>","ticker":"GOOG","status":"failed","error":"..."}
+```
 
 ## Testing
 
@@ -66,19 +82,4 @@ go test ./internal/domain/...
 
 # Full integration tests (requires Docker for testcontainers)
 make test
-```
-
-## Project layout
-
-```
-cmd/bluesheet/       Single binary entrypoint (api | worker | migrate)
-internal/
-  config/            Environment-based configuration
-  domain/            Types, validation
-  httpapi/           REST handlers (create, get)
-  report/            CSV generator interface + stub
-  storage/           S3 upload abstraction
-  store/             PostgreSQL repository + migrations
-  worker/            Poll loop, orchestration (generate → upload → done)
-migrations/          SQL migration files (also embedded in store package)
 ```
