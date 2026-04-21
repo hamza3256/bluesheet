@@ -1,9 +1,12 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -107,11 +110,47 @@ func (w *Worker) process(ctx context.Context, req *domain.BlueSheetRequest, log 
 	}
 
 	log.Info("request completed", "request_id", req.ID, "rows", rowCount, "s3_key", key)
+	w.notify(ctx, req, domain.StatusSucceeded, nil, log)
 }
 
 func (w *Worker) fail(ctx context.Context, req *domain.BlueSheetRequest, cause error, log *slog.Logger) {
 	log.Error("request failed", "request_id", req.ID, "error", cause)
 	_ = w.repo.FailRequest(ctx, req.ID, cause.Error())
+	errMsg := cause.Error()
+	w.notify(ctx, req, domain.StatusFailed, &errMsg, log)
+}
+
+// notify POSTs to the request's callback_url (if set) with the final status.
+func (w *Worker) notify(ctx context.Context, req *domain.BlueSheetRequest, status domain.RequestStatus, errMsg *string, log *slog.Logger) {
+	if req.CallbackURL == nil || *req.CallbackURL == "" {
+		return
+	}
+
+	payload := map[string]any{
+		"request_id": req.ID,
+		"ticker":     req.Ticker,
+		"status":     status,
+	}
+	if errMsg != nil {
+		payload["error"] = *errMsg
+	}
+
+	body, _ := json.Marshal(payload)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, *req.CallbackURL, bytes.NewReader(body))
+	if err != nil {
+		log.Warn("callback: build request failed", "url", *req.CallbackURL, "error", err)
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		log.Warn("callback: POST failed", "url", *req.CallbackURL, "error", err)
+		return
+	}
+	resp.Body.Close()
+	log.Info("callback sent", "url", *req.CallbackURL, "status_code", resp.StatusCode)
 }
 
 func sleep(ctx context.Context, d time.Duration) {
