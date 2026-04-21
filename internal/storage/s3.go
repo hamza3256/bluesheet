@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -18,8 +19,14 @@ type Uploader interface {
 	Upload(ctx context.Context, bucket, key string, body io.Reader) (etag string, err error)
 }
 
+// Presigner generates time-limited HTTPS URLs for GET access to objects (used by the API).
+type Presigner interface {
+	PresignedGetURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error)
+}
+
 type S3Uploader struct {
-	client *s3.Client
+	client        *s3.Client
+	presignClient *s3.PresignClient
 }
 
 func NewS3Uploader(ctx context.Context, cfg *config.Config) (*S3Uploader, error) {
@@ -50,7 +57,10 @@ func NewS3Uploader(ctx context.Context, cfg *config.Config) (*S3Uploader, error)
 		o.UsePathStyle = true
 	})
 
-	return &S3Uploader{client: client}, nil
+	return &S3Uploader{
+		client:        client,
+		presignClient: s3.NewPresignClient(client),
+	}, nil
 }
 
 func (u *S3Uploader) Upload(ctx context.Context, bucket, key string, body io.Reader) (string, error) {
@@ -67,4 +77,15 @@ func (u *S3Uploader) Upload(ctx context.Context, bucket, key string, body io.Rea
 		etag = *out.ETag
 	}
 	return etag, nil
+}
+
+func (u *S3Uploader) PresignedGetURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error) {
+	out, err := u.presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}, s3.WithPresignExpires(expiry))
+	if err != nil {
+		return "", fmt.Errorf("presign get object: %w", err)
+	}
+	return out.URL, nil
 }
