@@ -55,7 +55,13 @@ func runAPI(ctx context.Context, cfg *config.Config) {
 	defer db.Close()
 
 	repo := store.New(db)
-	srv := httpapi.NewServer(cfg, repo)
+	uploader, err := storage.NewS3Uploader(ctx, cfg)
+	if err != nil {
+		slog.Error("s3 client init failed", "error", err)
+		os.Exit(1)
+	}
+
+	srv := httpapi.NewServer(cfg, repo, uploader)
 
 	slog.Info("starting API server", "addr", cfg.HTTPAddr)
 	if err := srv.Run(ctx); err != nil {
