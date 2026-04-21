@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bluesheet
+      POSTGRES_PASSWORD: bluesheet
+      POSTGRES_DB: bluesheet1
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  localstack:
+    image: localstack/localstack:latest
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: us-east-1
+    ports:
+      - "4566:4566"
+
+  # One-shot init container to create the S3 bucket on startup.
+  localstack-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      - localstack
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until aws --endpoint-url=http://localstack:4566 s3 ls 2>/dev/null; do sleep 1; done
+        aws --endpoint-url=http://localstack:4566 s3 mb s3://bluesheets || true
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+
+volumes:
+  pgdata:
