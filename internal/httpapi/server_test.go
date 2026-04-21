@@ -16,10 +16,17 @@ import (
 	"github.com/hamza3256/bluesheet/internal/config"
 	"github.com/hamza3256/bluesheet/internal/domain"
 	"github.com/hamza3256/bluesheet/internal/httpapi"
+	"github.com/hamza3256/bluesheet/internal/storage"
 	"github.com/hamza3256/bluesheet/internal/store"
 )
 
-func setupAPI(t *testing.T) *httptest.Server {
+type stubPresigner struct{}
+
+func (*stubPresigner) PresignedGetURL(ctx context.Context, bucket, key string, expiry time.Duration) (string, error) {
+	return "https://presigned.example/object", nil
+}
+
+func setupAPI(t *testing.T, presigner storage.Presigner) (*httptest.Server, *store.Repository) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -55,15 +62,15 @@ func setupAPI(t *testing.T) *httptest.Server {
 	}
 
 	repo := store.New(pool)
-	cfg := &config.Config{HTTPAddr: ":0"}
-	srv := httpapi.NewServer(cfg, repo)
+	cfg := &config.Config{HTTPAddr: ":0", S3Bucket: "test-bucket"}
+	srv := httpapi.NewServer(cfg, repo, presigner)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts
+	return ts, repo
 }
 
 func TestCreateAndGetEndpoints(t *testing.T) {
-	ts := setupAPI(t)
+	ts, _ := setupAPI(t, nil)
 
 	body := map[string]any{
 		"ticker":     "AAPL",
@@ -100,7 +107,7 @@ func TestCreateAndGetEndpoints(t *testing.T) {
 }
 
 func TestValidationErrors(t *testing.T) {
-	ts := setupAPI(t)
+	ts, _ := setupAPI(t, nil)
 
 	tests := []struct {
 		name string
@@ -122,5 +129,46 @@ func TestValidationErrors(t *testing.T) {
 				t.Errorf("status = %d, want 400", resp.StatusCode)
 			}
 		})
+	}
+}
+
+func TestGetSucceededIncludesDownloadURL(t *testing.T) {
+	ts, repo := setupAPI(t, &stubPresigner{})
+	ctx := context.Background()
+
+	req, err := repo.CreateRequest(ctx, domain.CreateRequestInput{
+		Ticker:    "MU",
+		StartTime: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	key := req.ID.String() + "/MU.csv"
+	if err := repo.CompleteRequest(ctx, req.ID, key, `"etag"`, 99); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/report-requests/" + req.ID.String())
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var body struct {
+		Status      string `json:"status"`
+		DownloadURL string `json:"download_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Status != string(domain.StatusSucceeded) {
+		t.Fatalf("status = %s, want succeeded", body.Status)
+	}
+	if body.DownloadURL != "https://presigned.example/object" {
+		t.Fatalf("download_url = %q", body.DownloadURL)
 	}
 }
