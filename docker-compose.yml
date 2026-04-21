@@ -4,14 +4,15 @@ services:
     environment:
       POSTGRES_USER: bluesheet
       POSTGRES_PASSWORD: bluesheet
-      POSTGRES_DB: bluesheet1
+      POSTGRES_DB: bluesheet
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # Pin a 3.x image: `latest` (2026.x) requires LOCALSTACK_AUTH_TOKEN and exits without it.
   localstack:
-    image: localstack/localstack:latest
+    image: localstack/localstack:3.8
     environment:
       SERVICES: s3
       DEFAULT_REGION: us-east-1
