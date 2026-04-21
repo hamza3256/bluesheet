@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -84,7 +85,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, req)
+	writeJSON(w, http.StatusCreated, s.reportJSON(r.Context(), req))
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -100,22 +101,31 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	type response struct {
-		*domain.BlueSheetRequest
-		DownloadURL *string `json:"download_url,omitempty"`
-	}
-	resp := response{BlueSheetRequest: req}
+	writeJSON(w, http.StatusOK, s.reportJSON(r.Context(), req))
+}
 
-	if req.Status == domain.StatusSucceeded && req.S3Key != nil && *req.S3Key != "" && s.presigner != nil {
-		url, err := s.presigner.PresignedGetURL(r.Context(), s.cfg.S3Bucket, *req.S3Key, s.cfg.PresignGetURLDuration)
-		if err != nil {
-			slog.Warn("presigned download URL failed", "request_id", req.ID, "error", err)
-		} else {
-			resp.DownloadURL = &url
+// reportJSON attaches s3_url and optional presigned download_url when the job succeeded.
+type reportResponse struct {
+	*domain.BlueSheetRequest
+	S3URL       *string `json:"s3_url,omitempty"`
+	DownloadURL *string `json:"download_url,omitempty"`
+}
+
+func (s *Server) reportJSON(ctx context.Context, req *domain.BlueSheetRequest) reportResponse {
+	resp := reportResponse{BlueSheetRequest: req}
+	if req.Status == domain.StatusSucceeded && req.S3Key != nil && *req.S3Key != "" {
+		u := fmt.Sprintf("s3://%s/%s", s.cfg.S3Bucket, *req.S3Key)
+		resp.S3URL = &u
+		if s.presigner != nil {
+			url, err := s.presigner.PresignedGetURL(ctx, s.cfg.S3Bucket, *req.S3Key, s.cfg.PresignGetURLDuration)
+			if err != nil {
+				slog.Warn("presigned download URL failed", "request_id", req.ID, "error", err)
+			} else {
+				resp.DownloadURL = &url
+			}
 		}
 	}
-
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

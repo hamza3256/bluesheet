@@ -158,8 +158,10 @@ func TestGetSucceededIncludesDownloadURL(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
+	wantS3 := "s3://test-bucket/" + key
 	var body struct {
 		Status      string `json:"status"`
+		S3URL       string `json:"s3_url"`
 		DownloadURL string `json:"download_url"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -168,7 +170,62 @@ func TestGetSucceededIncludesDownloadURL(t *testing.T) {
 	if body.Status != string(domain.StatusSucceeded) {
 		t.Fatalf("status = %s, want succeeded", body.Status)
 	}
+	if body.S3URL != wantS3 {
+		t.Fatalf("s3_url = %q, want %q", body.S3URL, wantS3)
+	}
 	if body.DownloadURL != "https://presigned.example/object" {
 		t.Fatalf("download_url = %q", body.DownloadURL)
+	}
+}
+
+func TestPostIdempotentSucceededIncludesS3URL(t *testing.T) {
+	ts, repo := setupAPI(t, &stubPresigner{})
+	ctx := context.Background()
+
+	in := domain.CreateRequestInput{
+		Ticker:    "NVDA",
+		StartTime: time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC),
+	}
+	req, err := repo.CreateRequest(ctx, in)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	key := req.ID.String() + "/NVDA.csv"
+	if err := repo.CompleteRequest(ctx, req.ID, key, `"etag"`, 12); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"ticker":     in.Ticker,
+		"start_time": in.StartTime.Format(time.RFC3339),
+		"end_time":   in.EndTime.Format(time.RFC3339),
+	})
+	resp, err := http.Post(ts.URL+"/v1/report-requests", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+
+	wantS3 := "s3://test-bucket/" + key
+	var out struct {
+		Status      string `json:"status"`
+		S3URL       string `json:"s3_url"`
+		DownloadURL string `json:"download_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Status != string(domain.StatusSucceeded) {
+		t.Fatalf("status = %s, want succeeded", out.Status)
+	}
+	if out.S3URL != wantS3 {
+		t.Fatalf("s3_url = %q, want %q", out.S3URL, wantS3)
+	}
+	if out.DownloadURL != "https://presigned.example/object" {
+		t.Fatalf("download_url = %q", out.DownloadURL)
 	}
 }

@@ -38,8 +38,8 @@ curl -s -X POST http://localhost:8080/v1/report-requests \
   -d '{"ticker":"AAPL","start_time":"2023-11-01T00:00:00Z","end_time":"2023-12-01T00:00:00Z"}' | jq .
 
 # Check status (replace <id> with the returned id)
-# When `status` is `succeeded`, the response includes a time-limited `download_url`
-# (S3 presigned GET) so you can fetch the CSV directly.
+# When `status` is `succeeded`, GET and POST responses include `s3_url` (`s3://bucket/key`)
+# and a time-limited `download_url` (S3 presigned GET) to fetch the CSV directly.
 curl -s http://localhost:8080/v1/report-requests/<id> | jq .
 ```
 
