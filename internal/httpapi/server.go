@@ -13,17 +13,20 @@ import (
 
 	"github.com/hamza3256/bluesheet/internal/config"
 	"github.com/hamza3256/bluesheet/internal/domain"
+	"github.com/hamza3256/bluesheet/internal/storage"
 	"github.com/hamza3256/bluesheet/internal/store"
 )
 
 type Server struct {
-	cfg  *config.Config
-	repo *store.Repository
-	mux  *http.ServeMux
+	cfg       *config.Config
+	repo      *store.Repository
+	presigner storage.Presigner
+	mux       *http.ServeMux
 }
 
-func NewServer(cfg *config.Config, repo *store.Repository) *Server {
-	s := &Server{cfg: cfg, repo: repo, mux: http.NewServeMux()}
+// presigner may be nil (no download_url on GET until configured).
+func NewServer(cfg *config.Config, repo *store.Repository, presigner storage.Presigner) *Server {
+	s := &Server{cfg: cfg, repo: repo, presigner: presigner, mux: http.NewServeMux()}
 	s.routes()
 	return s
 }
@@ -97,7 +100,22 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, req)
+	type response struct {
+		*domain.BlueSheetRequest
+		DownloadURL *string `json:"download_url,omitempty"`
+	}
+	resp := response{BlueSheetRequest: req}
+
+	if req.Status == domain.StatusSucceeded && req.S3Key != nil && *req.S3Key != "" && s.presigner != nil {
+		url, err := s.presigner.PresignedGetURL(r.Context(), s.cfg.S3Bucket, *req.S3Key, s.cfg.PresignGetURLDuration)
+		if err != nil {
+			slog.Warn("presigned download URL failed", "request_id", req.ID, "error", err)
+		} else {
+			resp.DownloadURL = &url
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
