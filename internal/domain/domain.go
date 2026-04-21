@@ -23,6 +23,7 @@ type BlueSheetRequest struct {
 	StartTime    time.Time     `json:"start_time"`
 	EndTime      time.Time     `json:"end_time"`
 	Status       RequestStatus `json:"status"`
+	CallbackURL  *string       `json:"callback_url,omitempty"`
 	ErrorMessage *string       `json:"error_message,omitempty"`
 	S3Key        *string       `json:"s3_key,omitempty"`
 	ETag         *string       `json:"etag,omitempty"`
@@ -32,9 +33,10 @@ type BlueSheetRequest struct {
 }
 
 type CreateRequestInput struct {
-	Ticker    string    `json:"ticker"`
-	StartTime time.Time `json:"start_time"`
-	EndTime   time.Time `json:"end_time"`
+	Ticker      string    `json:"ticker"`
+	StartTime   time.Time `json:"start_time"`
+	EndTime     time.Time `json:"end_time"`
+	CallbackURL *string   `json:"callback_url,omitempty"`
 }
 
 func (in *CreateRequestInput) Validate() error {

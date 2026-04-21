@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,37 +22,60 @@ func New(pool *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) CreateRequest(ctx context.Context, in domain.CreateRequestInput) (*domain.BlueSheetRequest, error) {
-	req := domain.BlueSheetRequest{
-		ID:        uuid.New(),
-		Ticker:    in.Ticker,
-		StartTime: in.StartTime,
-		EndTime:   in.EndTime,
-		Status:    domain.StatusQueued,
+	// Idempotency: if (ticker, start_time, end_time) already exists, return the existing row.
+	const insertQ = `
+		INSERT INTO blue_sheet_requests (id, ticker, start_time, end_time, status, callback_url)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (ticker, start_time, end_time) DO NOTHING
+		RETURNING id, ticker, start_time, end_time, status, callback_url,
+		          error_message, s3_key, etag, row_count, created_at, updated_at`
+
+	newID := uuid.New()
+	var req domain.BlueSheetRequest
+	err := r.pool.QueryRow(ctx, insertQ,
+		newID, in.Ticker, in.StartTime, in.EndTime, domain.StatusQueued, in.CallbackURL,
+	).Scan(
+		&req.ID, &req.Ticker, &req.StartTime, &req.EndTime, &req.Status, &req.CallbackURL,
+		&req.ErrorMessage, &req.S3Key, &req.ETag, &req.RowCount, &req.CreatedAt, &req.UpdatedAt,
+	)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Conflict: row already exists — fetch the existing one.
+		return r.findByKey(ctx, in.Ticker, in.StartTime, in.EndTime)
 	}
-
-	const q = `
-		INSERT INTO blue_sheet_requests (id, ticker, start_time, end_time, status)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING created_at, updated_at`
-
-	err := r.pool.QueryRow(ctx, q,
-		req.ID, req.Ticker, req.StartTime, req.EndTime, req.Status,
-	).Scan(&req.CreatedAt, &req.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert request: %w", err)
 	}
 	return &req, nil
 }
 
+func (r *Repository) findByKey(ctx context.Context, ticker string, start, end time.Time) (*domain.BlueSheetRequest, error) {
+	const q = `
+		SELECT id, ticker, start_time, end_time, status, callback_url,
+		       error_message, s3_key, etag, row_count, created_at, updated_at
+		FROM blue_sheet_requests
+		WHERE ticker = $1 AND start_time = $2 AND end_time = $3`
+
+	var req domain.BlueSheetRequest
+	err := r.pool.QueryRow(ctx, q, ticker, start, end).Scan(
+		&req.ID, &req.Ticker, &req.StartTime, &req.EndTime, &req.Status, &req.CallbackURL,
+		&req.ErrorMessage, &req.S3Key, &req.ETag, &req.RowCount, &req.CreatedAt, &req.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find by key: %w", err)
+	}
+	return &req, nil
+}
+
 func (r *Repository) GetRequest(ctx context.Context, id uuid.UUID) (*domain.BlueSheetRequest, error) {
 	const q = `
-		SELECT id, ticker, start_time, end_time, status,
+		SELECT id, ticker, start_time, end_time, status, callback_url,
 		       error_message, s3_key, etag, row_count, created_at, updated_at
 		FROM blue_sheet_requests WHERE id = $1`
 
 	var req domain.BlueSheetRequest
 	err := r.pool.QueryRow(ctx, q, id).Scan(
-		&req.ID, &req.Ticker, &req.StartTime, &req.EndTime, &req.Status,
+		&req.ID, &req.Ticker, &req.StartTime, &req.EndTime, &req.Status, &req.CallbackURL,
 		&req.ErrorMessage, &req.S3Key, &req.ETag, &req.RowCount, &req.CreatedAt, &req.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -76,12 +100,12 @@ func (r *Repository) DequeueRequest(ctx context.Context) (*domain.BlueSheetReque
 			FOR UPDATE SKIP LOCKED
 			LIMIT 1
 		)
-		RETURNING id, ticker, start_time, end_time, status,
+		RETURNING id, ticker, start_time, end_time, status, callback_url,
 		          error_message, s3_key, etag, row_count, created_at, updated_at`
 
 	var req domain.BlueSheetRequest
 	err := r.pool.QueryRow(ctx, q).Scan(
-		&req.ID, &req.Ticker, &req.StartTime, &req.EndTime, &req.Status,
+		&req.ID, &req.Ticker, &req.StartTime, &req.EndTime, &req.Status, &req.CallbackURL,
 		&req.ErrorMessage, &req.S3Key, &req.ETag, &req.RowCount, &req.CreatedAt, &req.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

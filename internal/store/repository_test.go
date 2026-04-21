@@ -170,8 +170,13 @@ func TestCompleteAndFailRequest(t *testing.T) {
 		t.Errorf("row_count = %v, want 42", got.RowCount)
 	}
 
-	// Create another request and fail it.
-	req2, _ := repo.CreateRequest(ctx, in)
+	// Create another request (different ticker) and fail it.
+	in2 := domain.CreateRequestInput{
+		Ticker:    "NVDA",
+		StartTime: time.Date(2023, 11, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2023, 12, 1, 0, 0, 0, 0, time.UTC),
+	}
+	req2, _ := repo.CreateRequest(ctx, in2)
 	repo.DequeueRequest(ctx)
 
 	err = repo.FailRequest(ctx, req2.ID, "something broke")
@@ -184,5 +189,30 @@ func TestCompleteAndFailRequest(t *testing.T) {
 	}
 	if got2.ErrorMessage == nil || *got2.ErrorMessage != "something broke" {
 		t.Errorf("error_message = %v, want 'something broke'", got2.ErrorMessage)
+	}
+}
+
+func TestIdempotency(t *testing.T) {
+	repo := setupTestDB(t)
+	ctx := context.Background()
+
+	in := domain.CreateRequestInput{
+		Ticker:    "TSLA",
+		StartTime: time.Date(2023, 10, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2023, 11, 1, 0, 0, 0, 0, time.UTC),
+	}
+
+	first, err := repo.CreateRequest(ctx, in)
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+
+	second, err := repo.CreateRequest(ctx, in)
+	if err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+
+	if first.ID != second.ID {
+		t.Errorf("idempotency broken: first.ID=%s second.ID=%s", first.ID, second.ID)
 	}
 }
